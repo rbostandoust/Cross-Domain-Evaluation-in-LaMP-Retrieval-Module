@@ -1,14 +1,12 @@
+import numpy as np
+import random
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel, AutoModelForSeq2SeqLM
 import argparse
 import pickle
 
-parser = argparse.ArgumentParser('places_c_r')
-parser.add_argument('-start', type=int)           # positional argument
-parser.add_argument('-end', type=int)      # option that takes a value
-parser.add_argument('-idx', type=str)  # on/off flag
-args = parser.parse_args()
+
 
 tokenizer = AutoTokenizer.from_pretrained('facebook/contriever-msmarco')
 model = AutoModel.from_pretrained('facebook/contriever-msmarco')
@@ -42,7 +40,7 @@ def mean_pooling(token_embeddings, mask):
 
 
 score_p = {}
-for input_num in range(args.start, args.end):
+for input_num in range(len(data)):
     score_p.update({data[input_num]['id']:[]})
     print(input_num)
     query = phi_q[input_num]
@@ -58,7 +56,68 @@ for input_num in range(args.start, args.end):
       score_p[data[input_num]['id']].append(rel_score.item())
         
         
-import pickle 
+model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-xxl")
+tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-xxl")
+# device = "cuda:0" if torch.cuda.is_available() else "cpu"
+# model = model.to(device)
 
-with open("/work/mrastikerdar_umass_edu/ir_project/scores_task3_train/score_p_{idx}.pkl".format(idx = args.idx),"wb") as f:
-    pickle.dump(score_p, f)
+
+
+#### Contriever Top-K ####
+
+    
+score_list = list(score_p.values())
+ids = list(score_p.keys())
+
+k = 4
+prompts = []
+for user in range(len(data)):
+    prompt = {}
+    prompt['id'] = data[user]['id']
+    prompt['text'] = ''
+    sorted_score_user_idx = np.flip(np.argsort(score_list[user]))
+    temp = data[user]['input']
+    tokens = tokenizer.tokenize(temp)    
+    len_input = len(tokens)
+    quota_p = int(np.floor((512-len_input)/k))-4
+    if(len_input >= 512):
+        temp = data[user]['input']
+        tokens = tokenizer.tokenize(temp)
+        sliced_tokens = tokens[:512]
+        sliced_sentence = tokenizer.convert_tokens_to_string(sliced_tokens)
+        prompt['text'] += sliced_sentence  
+        
+    elif(quota_p<=0):
+        temp = data[user]['input']
+        prompt['text'] += temp     
+        
+    else:
+        for i in range(k):
+            retrieved_idx = sorted_score_user_idx[i]
+            score = data[user]['profile'][retrieved_idx]['score']
+            review = data[user]['profile'][retrieved_idx]['text']
+            temp = f'{score} is the score for {review}' 
+            tokens = tokenizer.tokenize(temp)
+            sliced_tokens = tokens[:quota_p]
+            sliced_sentence = tokenizer.convert_tokens_to_string(sliced_tokens)
+            prompt['text'] += sliced_sentence
+
+            if i < k-1:
+                prompt['text'] += ', and '
+            else:
+                prompt['text'] += '. '
+                prompt['text'] += data[user]['input']
+    prompts.append(prompt)
+
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+prediction_task3 = []
+for i in range(len(data)):
+    
+    print(i)
+    inputs = tokenizer(prompts[i]['text'], return_tensors="pt").to(device)
+    model = model.to(device)
+    outputs = model.generate(**inputs)
+    prediction_task3.append(tokenizer.batch_decode(outputs, skip_special_tokens=True)[0])
